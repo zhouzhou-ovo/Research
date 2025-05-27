@@ -118,6 +118,7 @@ fit_mvn <- mod_mvn$sample(
   refresh = 500
 )
 fit_mvn$summary()
+fit_exp$diagnostic_summary()
 # 获取 mu 的后验样本
 draws <- fit_mvn$draws(format = "df")
 mu_post <- c(mean(draws$`mu[1]`),mean(draws$`mu[2]`))
@@ -143,5 +144,6 @@ ggplot() +
   scale_fill_gradient(low = "lightblue", high = "blue") +
   scale_color_gradient(low = "pink", high = "red") +
   labs(title = "True (fill) vs Posterior (contour) Density",
-       x = "X₁", y = "X₂") +
+       x = expression(X[1]),
+       y = expression(X[2])) +
   theme_minimal()

@@ -12,28 +12,22 @@
 // The input data is a vector 'y' of length 'N'.
 data {
   int<lower=0> N;
-  int<lower=1> d;
-  matrix[N,d] Y;
+  array[N] int<lower=0, upper=1> y;
 }
 
 // The parameters accepted by the model. Our model
 // accepts two parameters 'mu' and 'sigma'.
 parameters {
-  vector[d] mu;
-  cov_matrix[d] Sigma;
+  real<lower=0,upper=1> theta; 
 }
 
 // The model to be estimated. We model the output
 // 'y' to be normally distributed with mean 'mu'
 // and standard deviation 'sigma'.
-// 正常使用covariance matrix
 model {
-  // Prior
-  mu ~ normal(0, 100);
-  Sigma ~ inv_wishart(d + 1, diag_matrix(rep_vector(1, d)));  // Weakly informative prior
+  // prior 
+  theta ~ beta(1,1);
+  // sampling model
+  y ~ bernoulli(theta);
+}
 
-  // Likelihood
-  for (n in 1:N) {
-    Y[n] ~ multi_normal(mu, Sigma);
-}
-}

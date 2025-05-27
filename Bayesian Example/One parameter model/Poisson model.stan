@@ -12,22 +12,22 @@
 // The input data is a vector 'y' of length 'N'.
 data {
   int<lower=0> N;
-  vector[N] y;
+  array[N] int<lower=0> y;
 }
 
 // The parameters accepted by the model. Our model
 // accepts two parameters 'mu' and 'sigma'.
 parameters {
-  real mu;
-  real<lower=0> sigma;
+  real<lower=0> lambda;
 }
 
 // The model to be estimated. We model the output
 // 'y' to be normally distributed with mean 'mu'
 // and standard deviation 'sigma'.
 model {
-  mu ~ normal(0,100);
-  sigma ~ inv_gamma(1,1);
-  y ~ normal(mu, sigma);
+  // prior model
+  lambda ~ gamma(2,1);
+  // sampling model
+  y ~ poisson(lambda);
 }
 
