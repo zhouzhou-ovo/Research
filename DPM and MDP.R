@@ -4,6 +4,7 @@ library(posterior)
 library(bayesplot)
 library(ggplot2)
 library(tidyr)
+library(dplyr)
 
 # true parameters of  mixture gaussian distribution
 set.seed(66)
@@ -128,7 +129,7 @@ ggplot() +
   theme_minimal()
 
 
-################ MDP prior ##################
+################ HDP prior ##################
 group_idx <- rep(1,N)
 
 # Visualize the data with its artificial grouping
@@ -142,7 +143,7 @@ ggplot(sim_data_df, aes(x = y, fill = group)) +
 #---------------------------------------------------------------------
 # 3. FIT THE HDP-GMM (MDP) MODEL
 #---------------------------------------------------------------------
-mod_HDP_GMM <- cmdstan_model("MDP-GMM.stan")
+mod_HDP_GMM <- cmdstan_model("HDP-GMM.stan")
 
 # Prior parameters setting
 K_max <- 20
@@ -210,3 +211,95 @@ ggplot(df_pred_long, aes(x = y_rep_value)) +
 # **EXPECTATION**: Since the groups are artificial, the inferred proportions pi[1,],
 # pi[2,], and pi[3,] should all be very similar to each other.
 fit_HDP_GMM$summary("pi")
+
+################ MDP prior ##################
+mod_MDP_GMM <- cmdstan_model("MDP-GMM.stan")
+
+K_max <- 20
+J <- 1
+
+# MDP group assignment
+group_idx <- rep(1:J, length.out = length(y))
+N <- length(y)
+
+# hyperprior settings
+mu0_prior_mean <- mean(y)
+mu0_prior_sd   <- 10
+
+tau0_prior_shape <- 2
+tau0_prior_rate  <- 1
+
+nu0_prior_shape <- 2
+nu0_prior_rate  <- 1
+
+sigma0_prior_shape <- 2
+sigma0_prior_rate  <- 1
+
+alpha <- 1.0
+gamma <- 1.0
+
+# -----------------------------------------------------
+# 3. Assemble Data List for Stan
+# -----------------------------------------------------
+data_MDP_GMM <- list(
+  N = N, J = J, K = K_max,
+  y = y,
+  group_idx = group_idx,
+  alpha = alpha,
+  gamma = gamma,
+  
+  mu0_prior_mean = mu0_prior_mean,
+  mu0_prior_sd   = mu0_prior_sd,
+  tau0_prior_shape = tau0_prior_shape,
+  tau0_prior_rate  = tau0_prior_rate,
+  nu0_prior_shape  = nu0_prior_shape,
+  nu0_prior_rate   = nu0_prior_rate,
+  sigma0_prior_shape = sigma0_prior_shape,
+  sigma0_prior_rate  = sigma0_prior_rate
+)
+
+# -----------------------------------------------------
+# 4. Fit the Model
+# -----------------------------------------------------
+fit_MDP_GMM <- mod_MDP_GMM$sample(
+  data = data_MDP_GMM,
+  seed = 66,
+  chains = 4,
+  iter_warmup = 500,
+  iter_sampling = 1000,
+  parallel_chains = 4,
+  refresh = 500,
+  adapt_delta = 0.9
+)
+
+# -----------------------------------------------------
+# 5. Posterior Predictive Checks
+# -----------------------------------------------------
+y_rep_matrix <- as_draws_matrix(fit_MDP_GMM$draws("y_rep"))
+set.seed(123)
+plot_indices <- sample(1:nrow(y_rep_matrix), size = 50)
+y_rep_subset <- y_rep_matrix[plot_indices, ]
+
+df_pred_long <- as.data.frame(t(y_rep_subset)) %>%
+  mutate(obs_id = 1:N, y_true = y, group = paste("Group", group_idx)) %>%
+  pivot_longer(
+    cols = -c(obs_id, y_true, group), 
+    names_to = "rep", 
+    values_to = "y_rep_value"
+  )
+
+ggplot(df_pred_long, aes(x = y_rep_value)) +
+  geom_density(aes(group = rep), color = "skyblue", alpha = 0.2) +
+  geom_density(data = . %>% distinct(obs_id, .keep_all = TRUE), aes(x = y_true), color = "black", linewidth = 1.2) +
+  facet_wrap(~group, ncol = 1) +
+  labs(
+    title = "Posterior Predictive Checks (MDP-GMM)",
+    subtitle = "Black: Observed | Blue: 50 Posterior Predictive Samples",
+    x = "y", y = "Density"
+  ) +
+  theme_minimal()
+
+# -----------------------------------------------------
+# 6. Examine Inferred Group Weights
+# -----------------------------------------------------
+fit_MDP_GMM$summary("pi")
