@@ -97,48 +97,41 @@ split_interval_exact <- function(L, R, tol = 1e-8) {
 
 # split exact time and interval-censor data in 2 treatments 
 bcos_RT <- split_interval_exact(bcos$left[bcos$treatment=="RT"],bcos$right[bcos$treatment=="RT"])
-bcos_RT <- data.frame(L=c(bcos_RT$t_exact,bcos_RT$L_interval),
-                      R=c(bcos_RT$t_exact,bcos_RT$R_interval),
-                      is_censored = c(rep(0, bcos_RT$n_exact), rep(1, bcos_RT$n_interval)))
-
 bcos_RCT <- split_interval_exact(bcos$left[bcos$treatment=="RCT"],bcos$right[bcos$treatment=="RCT"])
-bcos_RCT <- data.frame(L=c(bcos_RCT$t_exact,bcos_RCT$L_interval),
-                      R=c(bcos_RCT$t_exact,bcos_RCT$R_interval),
-                      is_censored = c(rep(0, bcos_RCT$n_exact), rep(1, bcos_RCT$n_interval)))
 
 # load stan model
-MDP_weibull <- cmdstan_model("MDP-weibull.stan")
+MDP_ln <- cmdstan_model("MDP-lognormal.stan")
 
 # stan data
-RT_weibull <- list(
-  N = length(bcos_RT$L),
-  L = bcos_RT$L,
-  R = bcos_RT$R,
-  is_censored = bcos_RT$is_censored,
-  a=2,
-  b=0.05,
+RT_ln <- list(
+  N_interval = bcos_RT$n_interval,
+  N_exact = bcos_RT$n_exact,
+  N_grid = 100,
+  t_exact = bcos_RT$t_exact,
+  L = bcos_RT$L_interval,
+  R = bcos_RT$R_interval,
   K = 20,
   tau = 46,
-  L_grid = 30,
+  L_grid = 20,
   M = 1
 )
 
-RCT_weibull <- list(
-  N = length(bcos_RCT$L),
-  L = bcos_RCT$L,
-  R = bcos_RCT$R,
-  is_censored = bcos_RCT$is_censored,
-  a=2,
-  b=0.1,
+RCT_ln <- list(
+  N_interval = bcos_RCT$n_interval,
+  N_exact = bcos_RCT$n_exact,
+  N_grid = 100,
+  t_exact = bcos_RCT$t_exact,
+  L = bcos_RCT$L_interval,
+  R = bcos_RCT$R_interval,
   K = 20,
   tau = 46,
-  L_grid = 30,
+  L_grid = 20,
   M = 1
 )
 
 # model fit
-fit_RT_weibull <- MDP_weibull$sample(
-  data = RT_weibull,
+fit_RT_ln <- MDP_ln$sample(
+  data = RT_ln,
   seed = 123,
   chains = 4,
   parallel_chains = 4,
@@ -148,8 +141,8 @@ fit_RT_weibull <- MDP_weibull$sample(
   save_warmup = FALSE
 )
 
-fit_RCT_weibull <- MDP_weibull$sample(
-  data = RCT_weibull,
+fit_RCT_ln <- MDP_ln$sample(
+  data = RCT_ln,
   seed = 123,
   chains = 4,
   parallel_chains = 4,
@@ -160,18 +153,15 @@ fit_RCT_weibull <- MDP_weibull$sample(
 )
 
 # get posterior results
-rmst_RT_weibull <- fit_RT_weibull$draws("rmst_from_F") %>%
+rmst_RT_ln <- fit_RT_ln$draws("rmst_from_F") %>%
   as_draws_df() %>%
   drop_na(rmst_from_F)
 
-rmst_RCT_weibull <- fit_RCT_weibull$draws("rmst_from_F") %>%
+rmst_RCT_ln <- fit_RCT_ln$draws("rmst_from_F") %>%
   as_draws_df() %>%
   drop_na(rmst_from_F)
 
-cat("The posterior mean of RMST of RT is", mean(rmst_RT_weibull$rmst_from_F), "\n")
-cat("The posterior mean of RMST of RCT is", mean(rmst_RCT_weibull$rmst_from_F), "\n")
-
-ggplot(rmst_RT_weibull, aes(x = rmst_from_F)) +
+ggplot(rmst_RT_ln[1:1000,], aes(x = rmst_from_F)) +
   geom_histogram(color = "black", fill = "skyblue", bins = 50) +
   labs(
     title = "Posterior Distribution of RMST (RT Group)",
@@ -180,60 +170,60 @@ ggplot(rmst_RT_weibull, aes(x = rmst_from_F)) +
   ) +
   theme_minimal()
 
-ggplot(rmst_RCT_weibull, aes(x = rmst_from_F)) +
+ggplot(rmst_RCT_ln[1:1000,], aes(x = rmst_from_F)) +
   geom_histogram(color = "black", fill = "skyblue", bins = 50) +
   labs(
-    title = "Posterior Distribution of RMST (RCT Group)",
+    title = "Posterior Distribution of RMST (RT Group)",
     x = "RMST",
     y = "Frequency"
   ) +
   theme_minimal()
 
 # survival curve
-draws_surv_RCT_weibull <- fit_RCT_weibull$draws("F_curve")
-draws_surv_RT_weibull <- fit_RT_weibull$draws("F_curve")
+draws_surv_RCT_ln <- fit_RCT_ln$draws("F_curve")
+draws_surv_RT_ln <- fit_RT_ln$draws("F_curve")
 
-time_grid_RCT <- seq(0, RCT_weibull$tau, length.out = RCT_weibull$L_grid)
-time_grid_RT <- seq(0, RT_weibull$tau, length.out = RT_weibull$L_grid)
+time_grid_RCT <- seq(0, RCT_ln$tau, length.out = RCT_ln$L_grid)
+time_grid_RT <- seq(0, RT_ln$tau, length.out = RT_ln$L_grid)
 
-surv_df_RCT_weibull <- tibble(
+surv_df_RCT_ln <- tibble(
   time = time_grid_RCT,
-  surv = 1 - colMeans(as_draws_matrix(draws_surv_RCT_weibull))
+  surv = 1 - colMeans(as_draws_matrix(draws_surv_RCT_ln))
 )
 
-surv_df_RT_weibull <- tibble(
+surv_df_RT_ln <- tibble(
   time = time_grid_RT,
-  surv = 1 - colMeans(as_draws_matrix(draws_surv_RT_weibull))
+  surv = 1 - colMeans(as_draws_matrix(draws_surv_RT_ln))
 )
 
 # choose RCT, draw coparison plot of KM curve and posterior survival curve
-fit_df_RCT_weibull <- fit_df %>% filter(strata == "treatment=RCT")
-fit_df_RT_weibull <- fit_df %>% filter(strata == "treatment=RT")
+fit_df_RCT_ln <- fit_df %>% filter(strata == "treatment=RCT")
+fit_df_RT_ln <- fit_df %>% filter(strata == "treatment=RT")
 
-km_plot_df_RCT_weibull <- fit_df_RCT_weibull %>%
+km_plot_df_RCT_ln <- fit_df_RCT_ln %>%
   dplyr::select(time, estimate) %>%
   rename(surv = estimate) %>%
   mutate(source = "KM")
 
-km_plot_df_RT_weibull <- fit_df_RT_weibull %>%
+km_plot_df_RT_ln <- fit_df_RT_ln %>%
   dplyr::select(time, estimate) %>%
   rename(surv = estimate) %>%
   mutate(source = "KM")
 
-posterior_plot_df_RCT_weibull <- surv_df_RCT_weibull %>%
+posterior_plot_df_RCT_ln <- surv_df_RCT_ln %>%
   mutate(source = "Posterior")
-posterior_plot_df_RCT_weibull$surv <- rev(posterior_plot_df_RCT_weibull$surv)
+posterior_plot_df_RCT_ln$surv <- rev(posterior_plot_df_RCT_ln$surv)
 
-posterior_plot_df_RT_weibull <- surv_df_RT_weibull %>%
+posterior_plot_df_RT_ln <- surv_df_RT_ln %>%
   mutate(source = "Posterior")
-posterior_plot_df_RT_weibull$surv <- rev(posterior_plot_df_RT_weibull$surv)
+posterior_plot_df_RT_ln$surv <- rev(posterior_plot_df_RT_ln$surv)
 
-compare_df_RCT_weibull <- bind_rows(km_plot_df_RCT_weibull, posterior_plot_df_RCT_weibull)
-compare_df_RT_weibull <- bind_rows(km_plot_df_RT_weibull, posterior_plot_df_RT_weibull)
+compare_df_RCT_ln <- bind_rows(km_plot_df_RCT_ln, posterior_plot_df_RCT_ln)
+compare_df_RT_ln <- bind_rows(km_plot_df_RT_ln, posterior_plot_df_RT_ln)
 
-ggplot(compare_df_RCT_weibull, aes(x = time, y = surv, color = source)) +
-  geom_step(data = subset(compare_df_RCT_weibull, source == "KM"), size = 1.2) +
-  geom_line(data = subset(compare_df_RCT_weibull, source == "Posterior"), size = 1.2, linetype = "dashed") +
+ggplot(compare_df_RCT_ln, aes(x = time, y = surv, color = source)) +
+  geom_step(data = subset(compare_df_RCT_ln, source == "KM"), size = 1.2) +
+  geom_line(data = subset(compare_df_RCT_ln, source == "Posterior"), size = 1.2, linetype = "dashed") +
   labs(
     title = "KM vs Posterior Survival Curve (RCT Group)",
     x = "Time",
@@ -242,9 +232,9 @@ ggplot(compare_df_RCT_weibull, aes(x = time, y = surv, color = source)) +
   ) +
   theme_minimal()
 
-ggplot(compare_df_RT_weibull, aes(x = time, y = surv, color = source)) +
-  geom_step(data = subset(compare_df_RT_weibull, source == "KM"), size = 1.2) +
-  geom_line(data = subset(compare_df_RT_weibull, source == "Posterior"), size = 1.2, linetype = "dashed") +
+ggplot(compare_df_RT_ln, aes(x = time, y = surv, color = source)) +
+  geom_step(data = subset(compare_df_RT_ln, source == "KM"), size = 1.2) +
+  geom_line(data = subset(compare_df_RT_ln, source == "Posterior"), size = 1.2, linetype = "dashed") +
   labs(
     title = "KM vs Posterior Survival Curve (RT Group)",
     x = "Time",

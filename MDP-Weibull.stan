@@ -6,10 +6,10 @@ functions {
   }
 
   // Calculates log(S(L) - S(R)) using the custom function
-  real interval_weibull_logpdf(real L, real R, real alpha, real sigma) {
+  real interval_weibull_logcdf(real L, real R, real alpha, real sigma) {
     real log_S_L = -pow(L / sigma, alpha);
     real log_S_R = -pow(R / sigma, alpha);
-    return log_sub_exp_custom(log_S_L, log_S_R);
+    return log_sub_exp_custom(log_S_R, log_S_L);
   }
  
   // Inverse CDF for a Weibull distribution
@@ -20,19 +20,22 @@ functions {
 
 data {
   // Data Inputs
-  int<lower=0> N_exact;
-  vector<lower=0>[N_exact] t_exact;
-  int<lower=0> N_interval;
-  vector<lower=0>[N_interval] L;
-  vector<lower=0>[N_interval] R;
+  int<lower=0> N; // Total number of observations
+  vector<lower=0>[N] L; // Left point of exact time and interval-censored
+  vector<lower=0>[N] R; // Right point of exact time and interval-censored
+  array[N] int is_censored; // 1 if interval-censored, 0 otherwise
 
   // Model Settings
-  int<lower=1> K;
+  int<lower=1> K;  // Truncated level
   real<lower=0> M; // DP concentration parameter
   
   // Settings for generated quantities
   int<lower=1> L_grid; // Number of bins for discrete F
-  real<lower=0> tau;
+  real<lower=0> tau; // Max limited time
+  
+  // Hyperprior setting
+  real<lower=1e-5> a;
+  real<lower=1e-5> b;
 }
 
 parameters {
@@ -51,7 +54,7 @@ parameters {
 
 transformed parameters {
   vector[K] pi; // The mixture weights pi are now transformed parameters
-  { // Local block for efficiency
+  {
     real remaining_stick = 1.0;
     for (k in 1:(K-1)) {
       pi[k] = v[k] * remaining_stick;
@@ -62,60 +65,99 @@ transformed parameters {
 }
 
 model {
-  // --- Priors and Hyperpriors ---
-  a1~gamma(2,1);
-  a2~gamma(2,1);
-  b1~gamma(2,1);
-  b2~gamma(2,1);
+  // --- Priors and Hyperpriors (non-informative)---
+  a1~gamma(a,b);
+  a2~gamma(a,b);
+  b1~gamma(a,b);
+  b2~gamma(a,b);
   
   shape~gamma(a1,b1);
   scale~gamma(a2,b2);
   
-  // stick-breaking prior
+  // stick-breaking prior with fixed concentration parameter
   v ~ beta(1, M);
 
   // Likelihood using marginalization
-  for (i in 1:N_exact) {
-    vector[K] lp_exact;
+  for (i in 1:N) {
+    vector[K] lp_components;
     for (k in 1:K) {
-      lp_exact[k] = log(pi[k]) + weibull_lpdf(t_exact[i] | shape[k], scale[k]);
+      if (is_censored[i] == 0) { // Exact time
+        lp_components[k] = log(pi[k]) + weibull_lpdf(L[i] | shape[k], scale[k]);
+      } else { // Interval-censored
+        lp_components[k] = log(pi[k]) + interval_weibull_logcdf(L[i], R[i], shape[k], scale[k]);
+      }
     }
-    target += log_sum_exp(lp_exact);
-  }
-  for (i in 1:N_interval) {
-    vector[K] lp_interval;
-    for (k in 1:K) {
-      lp_interval[k] = log(pi[k]) + interval_weibull_logpdf(R[i], L[i], shape[k], scale[k]);
-    }
-    target += log_sum_exp(lp_interval);
+    target += log_sum_exp(lp_components);
   }
 }
 
 generated quantities {
-  // --- Simulate one step of the Gibbs Algorithm ---
-  vector[N_interval] T_i;       // Compute latent times
+  // Generation of latent exact time Ti and pj, Fj
+  vector[N] T_all;       // Contain all time (including exact time and latent time)
   vector[L_grid] F_curve;       // The generated survival curve F
   real rmst_from_F;             // RMST calculated from the generated F
 
-  { // Use a local block to keep intermediate variables private
-    vector[N_exact + N_interval] T_all;
-    vector[L_grid + 1] p_j;
-    vector[L_grid + 1] F_probs;
-
+  {
+    vector[L_grid + 1] p_j; // probability of each components
+    vector[L_grid + 1] F_probs; // target distribution
+    array[K + N] real shape_vec; // new cluster's shape
+    array[K + N] real scale_vec; // new cluster's scale
+    array[K + N] int count_vec; // number of samples in clustering
+    int K_cluster = K;
+    
     // Part 1: Generate latent T_i for interval-censored data
-    for (i in 1:N_interval) {
-      vector[K] log_probs;
-      for (k in 1:K) {
-        log_probs[k] = log(pi[k]) + interval_weibull_logpdf(R[i], L[i], shape[k], scale[k]);
-      }
-      int z = categorical_logit_rng(log_probs);
-      real cdf_L = weibull_cdf(L[i] | shape[z], scale[z]);
-      real cdf_R = weibull_cdf(R[i] | shape[z], scale[z]);
-      real u = uniform_rng(cdf_L, cdf_R);
-      T_i[i] = weibull_cdf_inverse(u, shape[z], scale[z]);
+    // Initialize the parameters
+    for (k in 1:K) {
+      shape_vec[k] = shape[k];
+      scale_vec[k] = scale[k];
+      count_vec[k] = 0;
+    }
+    // Iterate over every interval-censored data point
+    for (i in 1:N) {
+      int K_curr = K_cluster;
+      vector[K_curr + 1] log_weights;
+
+      // Calculate weight for known clusters
+      for (k in 1:K_curr) {
+        if (is_censored[i] == 0) { // Exact time
+          log_weights[k] = log(count_vec[k] + 1e-9) + weibull_lpdf(L[i]|shape_vec[k],scale_vec[k]);
+        } else { // Interval-censored
+          log_weights[k] = log(count_vec[k] + 1e-9) + interval_weibull_logcdf(L[i],R[i],shape_vec[k],scale_vec[k]);
+        }
+    }
+
+    // new clusters with its weight
+    real shape_new = gamma_rng(a1, b1);
+    real scale_new = gamma_rng(a2, b2);
+    if (is_censored[i]==0) {
+      log_weights[K_curr + 1] = log(M) + weibull_lpdf(L[i]|shape_new,scale_new);
+    } else {
+      log_weights[K_curr + 1] = log(M) + interval_weibull_logcdf(L[i],R[i],shape_new,scale_new);
     }
     
-    T_all = append_row(t_exact, T_i);
+    // cluster assignment
+    int z_i = categorical_logit_rng(log_weights);
+
+    // combine new cluster and existing cluster
+    if (z_i == K_curr + 1) {
+      shape_vec[K_cluster + 1] = shape_new;
+      scale_vec[K_cluster + 1] = scale_new;
+      count_vec[K_cluster + 1] = 1;
+      count_vec[z_i] = 0;
+      K_cluster += 1;
+    } else {
+      count_vec[z_i] += 1;
+    }
+
+    // Assign or simulate the exact time Ti
+    if (is_censored[i] == 0) { // For known exact time
+      T_all[i] = L[i];
+    } else {
+      real u = uniform_rng(weibull_cdf(L[i] | shape_vec[z_i], scale_vec[z_i]),
+                         weibull_cdf(R[i] | shape_vec[z_i], scale_vec[z_i]));
+      T_all[i] = weibull_cdf_inverse(u,shape_vec[z_i],scale_vec[z_i]);
+    }
+  }
 
     // Part 2: Generate p_j and then F
     vector[L_grid] tau_grid = linspaced_vector(L_grid, 0, tau);
@@ -136,12 +178,13 @@ generated quantities {
     
     real prev_cdf = 0;
     for (j in 1:L_grid) {
-      real current_cdf_mix = 0;
+      real current_cdf = 0;
       for (k in 1:K) {
-        current_cdf_mix += pi[k] * weibull_cdf(tau_grid[j] | shape[k], scale[k]);
+        // current_cdf_mix += pi[k] * weibull_cdf(tau_grid[j] | shape[k], scale[k]);
+        current_cdf = weibull_cdf(tau_grid[j]|shape[k],scale[k]);
       }
-      p_j[j] = M * (current_cdf_mix - prev_cdf) + bin_counts[j];
-      prev_cdf = current_cdf_mix;
+      p_j[j] = M * (current_cdf - prev_cdf) + bin_counts[j];
+      prev_cdf = current_cdf;
     }
     p_j[L_grid + 1] = M * (1 - prev_cdf) + bin_counts[L_grid + 1];
     
